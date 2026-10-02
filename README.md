@@ -1,3 +1,5 @@
+源仓库：[WindowsVolumeLimiter](https://github.com/mryue5391/WindowsVolumeLimiter)
+
 # WindowsVolumeLimiter
 
 **WindowsVolumeLimiter** 是一款基于 C++ 开发的轻量级 Windows 音量管理工具，旨在解决 Windows 系统中音量异常变化、音量被其他程序自动调整等问题。
