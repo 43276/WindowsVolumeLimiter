@@ -12,6 +12,42 @@
 #define IDC_INTERVAL_LABEL 106
 #define ID_TIMER_UPDATE 1001
 
+namespace {
+constexpr int DEFAULT_MONITOR_INTERVAL = 500;
+constexpr int MAX_MONITOR_INTERVAL = 10000;
+constexpr wchar_t SETTINGS_KEY[] = L"Software\\WindowsVolumeLimiter";
+constexpr wchar_t MONITOR_INTERVAL_VALUE[] = L"MonitorInterval";
+
+int LoadMonitorInterval()
+{
+    DWORD interval = 0;
+    DWORD size = sizeof(interval);
+    LSTATUS result = RegGetValueW(
+        HKEY_CURRENT_USER, SETTINGS_KEY, MONITOR_INTERVAL_VALUE,
+        RRF_RT_REG_DWORD, nullptr, &interval, &size);
+
+    if (result != ERROR_SUCCESS || size != sizeof(interval) || interval > MAX_MONITOR_INTERVAL) {
+        return DEFAULT_MONITOR_INTERVAL;
+    }
+    return static_cast<int>(interval);
+}
+
+void SaveMonitorInterval(int interval)
+{
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, SETTINGS_KEY, 0, nullptr,
+                        REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr,
+                        &key, nullptr) != ERROR_SUCCESS) {
+        return;
+    }
+
+    DWORD value = static_cast<DWORD>(interval);
+    RegSetValueExW(key, MONITOR_INTERVAL_VALUE, 0, REG_DWORD,
+                   reinterpret_cast<const BYTE*>(&value), sizeof(value));
+    RegCloseKey(key);
+}
+}
+
 MainWindow::MainWindow()
     : m_hWnd(nullptr)
     , m_hTrackbar(nullptr)
@@ -21,8 +57,8 @@ MainWindow::MainWindow()
     , m_hLockButton(nullptr)
     , m_hIntervalLabel(nullptr)
     , m_isLocked(false)
-    , m_targetVolume(50)
-    , m_monitorInterval(500)
+    , m_targetVolume(0)
+    , m_monitorInterval(LoadMonitorInterval())
     , m_hStopEvent(nullptr)
 {
 }
@@ -87,6 +123,9 @@ bool MainWindow::Create(HINSTANCE hInstance)
         return false;
     }
 
+    m_targetVolume = std::clamp(
+        static_cast<int>(m_audioController.GetMasterVolume() * 100.0f + 0.5f), 0, 100);
+
     InitializeControls();
     UpdateTargetVolumeLabel();
     UpdateCurrentVolumeLabel();
@@ -136,11 +175,11 @@ LRESULT MainWindow::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     case WM_COMMAND: {
         if (LOWORD(wParam) == IDC_LOCK_BUTTON && HIWORD(wParam) == BN_CLICKED) {
             OnLockButtonClick();
-        } else if (LOWORD(wParam) == IDC_INTERVAL_EDIT && HIWORD(wParam) == EN_CHANGE) {
+        } else if (LOWORD(wParam) == IDC_INTERVAL_EDIT && HIWORD(wParam) == EN_CHANGE && m_hIntervalEdit) {
             wchar_t buffer[32];
             GetWindowTextW(m_hIntervalEdit, buffer, 32);
             int value = _wtoi(buffer);
-            m_monitorInterval = std::clamp(value, 0, 10000);
+            m_monitorInterval = std::clamp(value, 0, MAX_MONITOR_INTERVAL);
         }
         break;
     }
@@ -181,6 +220,7 @@ void MainWindow::InitializeControls()
 {
     HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     int clientWidth = 480 - 40; // Window width minus left/right padding
+    const std::wstring intervalText = std::to_wstring(m_monitorInterval.load());
 
     m_hIntervalLabel = CreateWindowExW(
         0,
@@ -198,7 +238,7 @@ void MainWindow::InitializeControls()
     m_hIntervalEdit = CreateWindowExW(
         WS_EX_CLIENTEDGE,
         L"EDIT",
-        L"500",
+        intervalText.c_str(),
         WS_CHILD | WS_VISIBLE | ES_NUMBER | WS_TABSTOP,
         210, 20, 100, 24,
         m_hWnd,
@@ -233,7 +273,7 @@ void MainWindow::InitializeControls()
         nullptr
     );
     SendMessageW(m_hTrackbar, TBM_SETRANGE, TRUE, MAKELONG(0, 100));
-    SendMessageW(m_hTrackbar, TBM_SETPOS, TRUE, 50);
+    SendMessageW(m_hTrackbar, TBM_SETPOS, TRUE, m_targetVolume.load());
 
     m_hCurrentLabel = CreateWindowExW(
         0,
@@ -298,7 +338,7 @@ void MainWindow::LockVolume()
     wchar_t intervalBuffer[32];
     GetWindowTextW(m_hIntervalEdit, intervalBuffer, 32);
     int interval = _wtoi(intervalBuffer);
-    interval = std::clamp(interval, 0, 10000);
+    interval = std::clamp(interval, 0, MAX_MONITOR_INTERVAL);
     m_monitorInterval = interval;
 
     swprintf_s(intervalBuffer, L"%d", interval);
@@ -314,6 +354,7 @@ void MainWindow::LockVolume()
     SetWindowTextW(m_hLockButton, L"解鎖");
 
     m_monitorThread = std::thread(&MainWindow::MonitorThreadFunc, this);
+    SaveMonitorInterval(interval);
 }
 
 void MainWindow::UnlockVolume()
